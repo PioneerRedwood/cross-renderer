@@ -402,41 +402,18 @@ class Renderer {
   void LoadModels() {
     // Load bunny, plane models
     BuildBunnyMesh();
+
     m_PlaneModel = new Model();
     m_PlaneModel->mesh = m_MeshLoader->LoadMesh("plane.obj");
+    m_PlaneModel->modelMatrix.Translate(0.0f, -2.0f, 0.0f);
   }
 
   void BuildBunnyMesh() {
     m_BunnyModel = new Model();
     m_BunnyModel->mesh = m_MeshLoader->LoadMesh("bunny.obj");
     Mesh* mesh = m_BunnyModel->mesh;
-    // 매번 메시를 로드할 때마다 정규화해야 하는 단점이 있음. 이 부분은 추후 해결 바람
     if (mesh != nullptr) {
-      if (!mesh->verts.empty()) {
-        Vector3 min = mesh->verts[0];
-        Vector3 max = mesh->verts[0];
-        for (const Vector3& v : mesh->verts) {
-          min.x = std::min(min.x, v.x);
-          min.y = std::min(min.y, v.y);
-          min.z = std::min(min.z, v.z);
-          max.x = std::max(max.x, v.x);
-          max.y = std::max(max.y, v.y);
-          max.z = std::max(max.z, v.z);
-        }
-        m_BunnyCenter = {(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f,
-                         (min.z + max.z) * 0.5f};
-        const Vector3 size = max - min;
-        const float maxExtent = std::max({size.x, size.y, size.z});
-        if (maxExtent > 1e-6f) {
-          m_BunnyScale = 4.0f / maxExtent;
-        }
-      }
-
-      m_BunnyNormalizedVerts.resize(mesh->verts.size());
-      for (size_t i = 0; i < mesh->verts.size(); ++i) {
-        m_BunnyNormalizedVerts[i] =
-            (mesh->verts[i] - m_BunnyCenter) * m_BunnyScale;
-      }
+      m_BunnyNormalizedVerts = mesh->verts;
 
       mesh->tga = m_TextureLoader->LoadTGATextureWithName("numbered_checker.tga");
     }
@@ -444,23 +421,19 @@ class Renderer {
 
   void RenderMainScene(const Shader& shader, ShaderUniforms& uniforms) {
     // Plane 모델 렌더링 추가 바람
-
-    // Bunny 모델 렌더링
-    if (m_BunnyModel == nullptr) {
+    if (m_PlaneModel == nullptr) {
       return;
     }
-    Mesh* mesh = m_BunnyModel->mesh;
-    if (mesh == nullptr) {
+    Mesh* planeMesh = m_PlaneModel->mesh;
+    if (planeMesh == nullptr) {
       return;
     }
 
-    Matrix4x4 modelMat = m_BunnyModel->modelMatrix;
-
-    uniforms.model = modelMat;
+    uniforms.model = m_PlaneModel->modelMatrix;
+		uniforms.texture = planeMesh->tga;
     uniforms.view = m_CameraMatrix;
     uniforms.projection = m_ProjectionMatrix;
     uniforms.lightDir = m_LightDir.Normalize();
-    uniforms.texture = mesh->tga;
     uniforms.cameraPosition = m_Camera->eye;
 
     // Fixed material components
@@ -468,20 +441,49 @@ class Renderer {
     uniforms.diffuseStrength = 0.8f;
     uniforms.specularStrength = 1.4f;
     uniforms.shininess = 8.0f;
+    uniforms.specularColor = Color(0xFFFFFFAA);  // white color
+
+    for (size_t idx = 0; idx + 2 < planeMesh->indices.size(); idx += 3) {
+      uint32_t i0 = planeMesh->indices[idx];
+      uint32_t i1 = planeMesh->indices[idx + 1];
+      uint32_t i2 = planeMesh->indices[idx + 2];
+      const VertexInput v0{planeMesh->verts[i0], planeMesh->normals[i0],
+                           planeMesh->uvs[i0]};
+      const VertexInput v1{planeMesh->verts[i1], planeMesh->normals[i1],
+                           planeMesh->uvs[i1]};
+      const VertexInput v2{planeMesh->verts[i2], planeMesh->normals[i2],
+                           planeMesh->uvs[i2]};
+      const VertexOutput out0 = shader.VertexShader(v0, uniforms);
+      const VertexOutput out1 = shader.VertexShader(v1, uniforms);
+      const VertexOutput out2 = shader.VertexShader(v2, uniforms);
+      DrawShaderTri(out2, out1, out0, uniforms, shader, true);
+		}
+
+    // Bunny 모델 렌더링
+    if (m_BunnyModel == nullptr) {
+      return;
+    }
+    Mesh* bunnyMesh = m_BunnyModel->mesh;
+    if (bunnyMesh == nullptr) {
+      return;
+    }
+		uniforms.model = m_BunnyModel->modelMatrix;
+		uniforms.texture = bunnyMesh->tga;
+
     //      uniforms.specularColor = Color(0xFF0000FF); // red color
     uniforms.specularColor = Color(0xFFFFFFFF);  // white color
 
-    for (size_t idx = 0; idx + 2 < mesh->indices.size(); idx += 3) {
-      uint32_t i0 = mesh->indices[idx];
-      uint32_t i1 = mesh->indices[idx + 1];
-      uint32_t i2 = mesh->indices[idx + 2];
+    for (size_t idx = 0; idx + 2 < bunnyMesh->indices.size(); idx += 3) {
+      uint32_t i0 = bunnyMesh->indices[idx];
+      uint32_t i1 = bunnyMesh->indices[idx + 1];
+      uint32_t i2 = bunnyMesh->indices[idx + 2];
 
-      const VertexInput v0{m_BunnyNormalizedVerts[i0], mesh->normals[i0],
-                           mesh->uvs[i0]};
-      const VertexInput v1{m_BunnyNormalizedVerts[i1], mesh->normals[i1],
-                           mesh->uvs[i1]};
-      const VertexInput v2{m_BunnyNormalizedVerts[i2], mesh->normals[i2],
-                           mesh->uvs[i2]};
+      const VertexInput v0{m_BunnyNormalizedVerts[i0], bunnyMesh->normals[i0],
+                           bunnyMesh->uvs[i0]};
+      const VertexInput v1{m_BunnyNormalizedVerts[i1], bunnyMesh->normals[i1],
+                           bunnyMesh->uvs[i1]};
+      const VertexInput v2{m_BunnyNormalizedVerts[i2], bunnyMesh->normals[i2],
+                           bunnyMesh->uvs[i2]};
 
       const VertexOutput out0 = shader.VertexShader(v0, uniforms);
       const VertexOutput out1 = shader.VertexShader(v1, uniforms);
@@ -530,9 +532,6 @@ class Renderer {
 
   Model* m_BunnyModel{nullptr};
   std::vector<Vector3> m_BunnyNormalizedVerts;
-  Vector3 m_BunnyCenter{0.0f, 0.0f, 0.0f};
-  float m_BunnyScale{1.0f};
-
   Model* m_PlaneModel{nullptr};
 
   // Light parameters

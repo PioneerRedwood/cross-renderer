@@ -424,21 +424,6 @@ void SetupCameraMatrix(Matrix4x4& model, const Vector3& eye, const Vector3& at, 
   model.m44 = 1.0f;
 }
 
-void SetupPerspectiveProjectionMatrix(Matrix4x4& out, float fovY, float aspect, float near, float far) {
-  // 원근 투영 (Left-handed)
-  // https://www.songho.ca/opengl/gl_projectionmatrix.html
-
-  const float DEG2RAD = acos(-1.0f) / 180;
-
-  float tanfov = (float)tan(fovY * 0.5f * DEG2RAD);
-  out.m11 = (1.0f / tanfov) / aspect;
-  out.m22 = 1.0f / tanfov;
-  out.m33 = far / (far - near);
-  out.m34 = 1.0f;
-  out.m43 = -(near * far) / (far - near);
-  out.m44 = 0.0f;
-}
-
 /**
  * 원근 투영 
  * Z range: 0..1
