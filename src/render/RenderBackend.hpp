@@ -9,36 +9,49 @@ namespace render {
  * @brief Raw texture control, begin/end render pass, present
  * 
  */
-class RenderBackend {
+class IRenderBackend {
 public:
-  ResourceHandle CreateTexture(void* nativePointer, ResourceDescriptor&& desc) {
+  virtual ResourceHandle CreateTexture(void* nativePointer, ResourceDescriptor&& desc) = 0;
 
+  virtual void ImportTexture(ResourceHandle& resourceHandle, void* nativePointer, ResourceDescriptor&& desc) = 0;
+
+  virtual void* ResolveTexture(ResourceHandle& resourceHandle) = 0;
+
+  virtual void BeginRenderPass(RenderPassDescriptor rpd) = 0;
+
+  virtual void EndRenderPass() = 0;
+
+  virtual void Present(ResourceHandle resourceHandle) = 0;
+};
+
+/**
+ * 기존 CPU 렌더러
+ */
+class CPURenderer : public IRenderBackend {
+public:
+  virtual ResourceHandle CreateTexture(void* nativePointer, ResourceDescriptor&& desc) override {
+    // Create texture
   }
 
-  void ImportTexture(ResourceHandle& resourceHandle, void* nativePointer, ResourceDescriptor&& desc) {
-
+  virtual void ImportTexture(ResourceHandle& resourceHandle, void* nativePointer, ResourceDescriptor&& desc) override {
+    // Import texture
   }
 
-  void* ResolveTexture(ResourceHandle& resourceHandle) {
-
+  virtual void* ResolveTexture(ResourceHandle& resourceHandle) override {
+    // Resolve texture
   }
 
-  void BeginRenderPass(RenderPassDescriptor rpd) {
-
+  virtual void BeginRenderPass(RenderPassDescriptor rpd) override {
+    // Begin render pass
   }
 
-  void EndRenderPass() {
-
+  virtual void EndRenderPass() override {
+    // End render pass
   }
 
-  void Present(ResourceHandle resourceHandle) {
-
+  virtual void Present(ResourceHandle resourceHandle) override {
+    // Present
   }
-
-  
-
-private:
-  std::vector<ResourceHandle*> m_ResourceHandle;
 };
 
 }

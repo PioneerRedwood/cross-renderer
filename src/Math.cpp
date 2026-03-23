@@ -439,7 +439,40 @@ void SetupPerspectiveProjectionMatrix(Matrix4x4& out, float fovY, float aspect, 
   out.m44 = 0.0f;
 }
 
-void SetupViewportMatrix(Matrix4x4& out, float x, float y, float w, float h, float near, float far) {
+/**
+ * 원근 투영 
+ * Z range: 0..1
+ * https://www.songho.ca/opengl/gl_projectionmatrix.html
+ */
+void SetupPerspectiveProjectionMatrix(Matrix4x4& out, float fovY, float aspect, float near, float far) {
+  const float DEG2RAD = acos(-1.0f) / 180;
+
+  float tanfov = (float)tan(fovY * 0.5f * DEG2RAD);
+  out.m11 = (1.0f / tanfov) / aspect;
+  out.m22 = 1.0f / tanfov;
+  out.m33 = far / (far - near);
+  out.m34 = 1.0f;
+  out.m43 = -(near * far) / (far - near);
+  out.m44 = 0.0f;
+}
+
+/**
+ * 직교 투영 행렬은 원근 투영과 달리 원근감이 없는 투영 행렬이다.
+ * Z range: 0..1
+ * https://www.songho.ca/opengl/gl_projectionmatrix.html
+ */
+void SetupOrthographicProjectionMatrix(Matrix4x4& out, float left, float right, float bottom, float top, float near, float far) {
+  out.m11 = 2.0f / (right - left);
+  out.m22 = 2.0f / (top - bottom);
+  out.m33 = 1.0f / (far - near);
+  out.m41 = -(right + left) / (right - left);
+  out.m42 = -(top + bottom) / (top - bottom);
+  out.m43 = -near / (far - near);
+  out.m44 = 1.0f;
+}
+
+void SetupViewportMatrix(Matrix4x4& out, float x, float y, float w, float h, float near, float far) 
+{
   /*
   * https://www.songho.ca/opengl/gl_viewport.html
   +-----------------+ +----------------------+
@@ -460,6 +493,25 @@ void SetupViewportMatrix(Matrix4x4& out, float x, float y, float w, float h, flo
   out.m42 = y + h * 0.5f;
   out.m43 = 0.0f;
   out.m44 = 1.0f;
+}
+
+void SetupLightMatrix(Matrix4x4& outView, Matrix4x4& outProj, const Vector3& lightDir, 
+                     float shadowMapWidth, float shadowMapHeight, float near, float far) 
+{
+  // 라이트 뷰 행렬 구성
+  Vector3 lightPos = lightDir * -100.0f; // 라이트 위치는 라이트 방향의 반대 방향으로 충분히 멀리 설정
+  Vector3 target = { 0.0f, 0.0f, 0.0f }; // 라이트가 바라보는 타겟 (월드 원점)
+  Vector3 up = { 0.0f, 1.0f, 0.0f }; // 라이트 기준 위 방향
+
+  math::SetupCameraMatrix(outView, lightPos, target, up);
+
+  // 라이트 프로젝션 행렬 구성 (직교 투영)
+  float left = -shadowMapWidth / 2.0f;
+  float right = shadowMapWidth / 2.0f;
+  float bottom = -shadowMapHeight / 2.0f;
+  float top = shadowMapHeight / 2.0f;
+
+  math::SetupOrthographicProjectionMatrix(outProj, left, right, bottom, top, near, far);
 }
 
 uint32_t LerpColor(uint32_t from, uint32_t to, float t) {

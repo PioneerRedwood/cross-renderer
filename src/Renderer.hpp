@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "Model.hpp"
 #include "Mesh.hpp"
 #include "Shader.hpp"
 #include "TextureLoader.hpp"
@@ -77,16 +78,21 @@ class Renderer {
 
     m_TextureLoader = new TextureLoader(*m_Renderer);
     m_MeshLoader = new MeshLoader(*m_Renderer);
-    BuildBunnyMesh();
+    
+    LoadModels();
   }
 
   ~Renderer() {
     delete[] m_Framebuffer;
     delete[] m_ZBuffer;
     delete m_Camera;
-    delete m_BunnyMesh;
+
+    delete m_BunnyModel->mesh;
+    delete m_BunnyModel;
+    
     delete m_TextureLoader;
     delete m_MeshLoader;
+    
     if (m_FramebufferFormat != nullptr) {
       SDL_FreeFormat(m_FramebufferFormat);
       m_FramebufferFormat = nullptr;
@@ -96,11 +102,11 @@ class Renderer {
   }
 
   void Render(double delta) {
-    ClearBuffers();
+    UpdateScene(delta);
 
-    // RenderBunnyMesh(m_BasicLitShader, m_BasicLitShaderUniforms);
-    //    RenderBunnyMesh(m_PhongShader, m_PhongShaderUniforms);
-    RenderBunnyMesh(m_BlinnPhongShader, m_BlinnPhongShaderUniforms);
+    ClearBuffers();
+    RenderShadowMapScene(m_BlinnPhongShader, m_BlinnPhongShaderUniforms);
+    RenderMainScene(m_BlinnPhongShader, m_BlinnPhongShaderUniforms);
 
     SDL_UpdateTexture(m_MainTexture, nullptr, m_Framebuffer,
                       m_Width * static_cast<int>(sizeof(uint32_t)));
@@ -158,6 +164,16 @@ class Renderer {
   }
 
  private:
+  void UpdateScene(double delta) {
+    m_BlinnPhongShaderUniforms.model = Matrix4x4::identity;
+    
+    m_RotateRadian += 0.45f;
+    if (m_RotateRadian > 360.0f) {
+      m_RotateRadian -= 360.0f;
+    }
+    m_BunnyModel->modelMatrix.Rotate(0.0f, m_RotateRadian, 0.0f);
+  }
+
   void ClearBuffers() {
     std::fill(m_Framebuffer, m_Framebuffer + m_Width * m_Height, 0);
     std::fill(m_ZBuffer, m_ZBuffer + m_Width * m_Height, 1.0f);
@@ -224,6 +240,8 @@ class Renderer {
                                            m_Camera->aspect, m_ZNear, m_ZFar);
     math::SetupViewportMatrix(m_ViewportMatrix, 0, 0, m_Width, m_Height,
                               m_ZNear, m_ZFar);
+    math::SetupLightMatrix(m_LightViewMatrix, m_LightProjectionMatrix, m_LightDir,
+                            m_ShadowMapWidth, m_ShadowMapHeight, m_ZNear, m_ZFar);
   }
 
   void DrawTri(const Vector3& v0, const Vector3& v1, const Vector3& v2,
@@ -381,14 +399,23 @@ class Renderer {
     }
   }
 
+  void LoadModels() {
+    // Load bunny, plane models
+    BuildBunnyMesh();
+    m_PlaneModel = new Model();
+    m_PlaneModel->mesh = m_MeshLoader->LoadMesh("plane.obj");
+  }
+
   void BuildBunnyMesh() {
-     m_BunnyMesh = m_MeshLoader->LoadMesh("bunny.obj");
-//    m_BunnyMesh = m_MeshLoader->LoadMesh("cube.obj");
-    if (m_BunnyMesh != nullptr) {
-      if (!m_BunnyMesh->verts.empty()) {
-        Vector3 min = m_BunnyMesh->verts[0];
-        Vector3 max = m_BunnyMesh->verts[0];
-        for (const Vector3& v : m_BunnyMesh->verts) {
+    m_BunnyModel = new Model();
+    m_BunnyModel->mesh = m_MeshLoader->LoadMesh("bunny.obj");
+    Mesh* mesh = m_BunnyModel->mesh;
+    // 매번 메시를 로드할 때마다 정규화해야 하는 단점이 있음. 이 부분은 추후 해결 바람
+    if (mesh != nullptr) {
+      if (!mesh->verts.empty()) {
+        Vector3 min = mesh->verts[0];
+        Vector3 max = mesh->verts[0];
+        for (const Vector3& v : mesh->verts) {
           min.x = std::min(min.x, v.x);
           min.y = std::min(min.y, v.y);
           min.z = std::min(min.z, v.z);
@@ -405,33 +432,35 @@ class Renderer {
         }
       }
 
-      m_BunnyNormalizedVerts.resize(m_BunnyMesh->verts.size());
-      for (size_t i = 0; i < m_BunnyMesh->verts.size(); ++i) {
+      m_BunnyNormalizedVerts.resize(mesh->verts.size());
+      for (size_t i = 0; i < mesh->verts.size(); ++i) {
         m_BunnyNormalizedVerts[i] =
-            (m_BunnyMesh->verts[i] - m_BunnyCenter) * m_BunnyScale;
+            (mesh->verts[i] - m_BunnyCenter) * m_BunnyScale;
       }
 
-      m_BunnyMesh->tga = m_TextureLoader->LoadTGATextureWithName("numbered_checker.tga");
+      mesh->tga = m_TextureLoader->LoadTGATextureWithName("numbered_checker.tga");
     }
   }
 
-  void RenderBunnyMesh(const Shader& shader, ShaderUniforms& uniforms) {
-    if (m_BunnyMesh == nullptr) {
+  void RenderMainScene(const Shader& shader, ShaderUniforms& uniforms) {
+    // Plane 모델 렌더링 추가 바람
+
+    // Bunny 모델 렌더링
+    if (m_BunnyModel == nullptr) {
+      return;
+    }
+    Mesh* mesh = m_BunnyModel->mesh;
+    if (mesh == nullptr) {
       return;
     }
 
-    Matrix4x4 modelMat = Matrix4x4::identity;
-    m_RotateRadian += 0.45f;
-    if (m_RotateRadian > 360.0f) {
-      m_RotateRadian -= 360.0f;
-    }
-    modelMat.Rotate(0.0f, m_RotateRadian, 0.0f);
+    Matrix4x4 modelMat = m_BunnyModel->modelMatrix;
 
     uniforms.model = modelMat;
     uniforms.view = m_CameraMatrix;
     uniforms.projection = m_ProjectionMatrix;
     uniforms.lightDir = m_LightDir.Normalize();
-    uniforms.texture = m_BunnyMesh->tga;
+    uniforms.texture = mesh->tga;
     uniforms.cameraPosition = m_Camera->eye;
 
     // Fixed material components
@@ -442,17 +471,17 @@ class Renderer {
     //      uniforms.specularColor = Color(0xFF0000FF); // red color
     uniforms.specularColor = Color(0xFFFFFFFF);  // white color
 
-    for (size_t idx = 0; idx + 2 < m_BunnyMesh->indices.size(); idx += 3) {
-      uint32_t i0 = m_BunnyMesh->indices[idx];
-      uint32_t i1 = m_BunnyMesh->indices[idx + 1];
-      uint32_t i2 = m_BunnyMesh->indices[idx + 2];
+    for (size_t idx = 0; idx + 2 < mesh->indices.size(); idx += 3) {
+      uint32_t i0 = mesh->indices[idx];
+      uint32_t i1 = mesh->indices[idx + 1];
+      uint32_t i2 = mesh->indices[idx + 2];
 
-      const VertexInput v0{m_BunnyNormalizedVerts[i0], m_BunnyMesh->normals[i0],
-                           m_BunnyMesh->uvs[i0]};
-      const VertexInput v1{m_BunnyNormalizedVerts[i1], m_BunnyMesh->normals[i1],
-                           m_BunnyMesh->uvs[i1]};
-      const VertexInput v2{m_BunnyNormalizedVerts[i2], m_BunnyMesh->normals[i2],
-                           m_BunnyMesh->uvs[i2]};
+      const VertexInput v0{m_BunnyNormalizedVerts[i0], mesh->normals[i0],
+                           mesh->uvs[i0]};
+      const VertexInput v1{m_BunnyNormalizedVerts[i1], mesh->normals[i1],
+                           mesh->uvs[i1]};
+      const VertexInput v2{m_BunnyNormalizedVerts[i2], mesh->normals[i2],
+                           mesh->uvs[i2]};
 
       const VertexOutput out0 = shader.VertexShader(v0, uniforms);
       const VertexOutput out1 = shader.VertexShader(v1, uniforms);
@@ -460,6 +489,23 @@ class Renderer {
 
       DrawShaderTri(out2, out1, out0, uniforms, shader, true);
     }
+  }
+
+  void RenderShadowMapScene(const Shader& shader, ShaderUniforms& uniforms) {
+    // 라이트 시점으로 장면을 렌더링, m_ShadowMapFramebuffer에 깊이 값 기록
+    // m_LightViewMatrix, m_LightProjectionMatrix는 SetupLightMatrix에서 이미 구성되어 있음
+    // 간단한 깊이만 기록하는 쉐이더 사용 (예: DepthOnly Shader)
+    
+    // 그려야 할 메시 대상으로 쉐도우맵 렌더링
+    // 일단 그릴 대상은 Plane, Bunny 모델 한정
+
+    // Vector4 lightClip = lightProjection * lightView * model * vertexPosition
+    // Vector4 lightNdc = lightClip / lightClip.w // NDC 변환
+    // Shdow map 해상도에 맞게 픽셀 좌표 변환
+    // 가장 가까운 깊이 값 저장
+
+    // 만약 현재 깊이 값과 저장된 깊이 값에 차이가 일정 임계값 이상이면 그림자 처리 (예: 현재 깊이 > 저장된 깊이 + bias)
+    // bias는 그림자 acne 방지 위해 사용, 너무 작으면 여전히 acne 발생, 너무 크면 그림자가 너무 멀리 떨어져 보임
   }
 
  private:
@@ -482,20 +528,24 @@ class Renderer {
 
   float m_RotateRadian{0.0f};
 
-  Mesh* m_BunnyMesh{nullptr};
+  Model* m_BunnyModel{nullptr};
   std::vector<Vector3> m_BunnyNormalizedVerts;
   Vector3 m_BunnyCenter{0.0f, 0.0f, 0.0f};
   float m_BunnyScale{1.0f};
 
-  Vector3 m_LightDir{-0.45f, 0.80f, -0.40f};
+  Model* m_PlaneModel{nullptr};
 
-  //  // Using BasicLitShader
-  //  BasicLitShader m_BasicLitShader;
-  //  ShaderUniforms m_BasicLitShaderUniforms;
-  //
-  // Using PhongShader
-  PhongShader m_PhongShader;
-  ShaderUniforms m_PhongShaderUniforms;
+  // Light parameters
+  Vector3 m_LightDir{-0.45f, 0.80f, -0.40f};
+  Matrix4x4 m_LightViewMatrix;
+  Matrix4x4 m_LightProjectionMatrix;
+
+  // Shadow map parameters
+  uint32_t m_ShadowMapWidth {512};
+  uint32_t m_ShadowMapHeight {512};
+  // shadow map framebuffer and texture
+  float* m_ShadowMapFramebuffer {nullptr};
+  int m_ShadowBias {10}; // bias to prevent shadow acne
 
   // Using BlinnPhongShader
   BlinnPhongShader m_BlinnPhongShader;

@@ -166,10 +166,21 @@ void SetupCameraMatrix(Matrix4x4& out, const Vector3& eye, const Vector3& at, co
 void SetupPerspectiveProjectionMatrix(Matrix4x4& out, float fovY, float aspect, float near, float far);
 
 /**
+ * @brief 직교 투영 프러스텀 매트릭스 반환
+ */
+void SetupOrthographicProjectionMatrix(Matrix4x4& out, float left, float right, 
+                                       float bottom, float top, float near, float far);
+
+/**
  * @brief 뷰포트 행렬 구성
  * near, far는 기본값 각각 0, 1 사용
  */
 void SetupViewportMatrix(Matrix4x4& out, float x, float y, float w, float h, float near, float far);
+
+/**
+ * @brief 빛의 방향과 그림자 맵의 크기, near, far 값을 기반으로 라이트 뷰와 프로젝션 매트릭스 구성
+ */
+void SetupLightMatrix(Matrix4x4& outView, Matrix4x4& outProj, const Vector3& lightDir, float shadowMapWidth, float shadowMapHeight, float near, float far);
 
 uint32_t LerpColor(uint32_t from, uint32_t to, float t);
 

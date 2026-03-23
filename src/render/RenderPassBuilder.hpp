@@ -11,7 +11,7 @@ namespace render {
 class RenderPassBuilder {
 public:
   using RenderPassFunc = std::function<void(RenderPassBuilder&)>;
-  using RenderContextFunc = std::function<void(RenderBackend&)>;
+  using RenderContextFunc = std::function<void(IRenderBackend&)>;
 
   void BeginFrame() {
     Reset();
@@ -67,7 +67,7 @@ private:
   std::vector<RenderPass> m_RenderPasses;
   std::vector<ResourceHandle> m_ResourceHandles;
   std::vector<RenderPassDescriptor> m_RenderPassDescriptors;
-  RenderBackend m_RenderBackend; // Temporaily holding 
+  IRenderBackend* m_RenderBackend; // Temporaily holding 
 };
 
 }  // namespace render
