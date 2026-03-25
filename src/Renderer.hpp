@@ -126,7 +126,6 @@ class Renderer {
 
   void Render(double delta) {
     UpdateScene(delta);
-    UpdateShadowMatrices();
 
     ClearBuffers();
     m_HasLoggedShadowTriThisFrame = false;
@@ -260,108 +259,26 @@ class Renderer {
     math::SetupViewportMatrix(m_ViewportMatrix, 0, 0, m_Width, m_Height,
                               m_ZNear, m_ZFar);
 
-    math::SetupLightViewMatrix(m_LightViewMatrix, m_LightProjectionMatrix,
-                               m_LightDir, m_ShadowDepth.width,
-                               m_ShadowDepth.height, m_ZNear, m_ZFar);
+    SetupShadowMatrices();
     math::SetupViewportMatrix(m_ShadowViewportMatrix, 0, 0, m_ShadowDepth.width,
                               m_ShadowDepth.height, m_ZNear, m_ZFar);
   }
 
-  struct Bounds3 {
-    Vector3 min;
-    Vector3 max;
-    bool valid{false};
-  };
-
-  void ExpandBounds(Bounds3& bounds, const Vector3& point) const {
-    if (!bounds.valid) {
-      bounds.min = point;
-      bounds.max = point;
-      bounds.valid = true;
-      return;
-    }
-
-    bounds.min.x = std::min(bounds.min.x, point.x);
-    bounds.min.y = std::min(bounds.min.y, point.y);
-    bounds.min.z = std::min(bounds.min.z, point.z);
-    bounds.max.x = std::max(bounds.max.x, point.x);
-    bounds.max.y = std::max(bounds.max.y, point.y);
-    bounds.max.z = std::max(bounds.max.z, point.z);
-  }
-
-  void ExpandShadowBoundsForModel(const Model* model, Bounds3& bounds) const {
-    if (model == nullptr || model->mesh == nullptr) {
-      return;
-    }
-
-    for (const Vector3& vertex : model->mesh->verts) {
-      const Vector4 world =
-          model->modelMatrix * Vector4(vertex.x, vertex.y, vertex.z, 1.0f);
-      ExpandBounds(bounds, {world.x, world.y, world.z});
-    }
-  }
-
-  void ExpandShadowLightBoundsForModel(const Model* model,
-                                       Bounds3& bounds) const {
-    if (model == nullptr || model->mesh == nullptr) {
-      return;
-    }
-
-    for (const Vector3& vertex : model->mesh->verts) {
-      const Vector4 world =
-          model->modelMatrix * Vector4(vertex.x, vertex.y, vertex.z, 1.0f);
-      const Vector4 light = m_LightViewMatrix * world;
-      ExpandBounds(bounds, {light.x, light.y, light.z});
-    }
-  }
-
-  void UpdateShadowMatrices() {
-    Bounds3 worldBounds;
-    ExpandShadowBoundsForModel(m_PlaneModel, worldBounds);
-    ExpandShadowBoundsForModel(m_CubeModel, worldBounds);
-
-    if (!worldBounds.valid) {
-      math::SetupLightViewMatrix(m_LightViewMatrix, m_LightProjectionMatrix,
-                                 m_LightDir, m_ShadowDepth.width,
-                                 m_ShadowDepth.height, m_ZNear, m_ZFar);
-      return;
-    }
-
-    const Vector3 sceneCenter = (worldBounds.min + worldBounds.max) / 2.0f;
-    const Vector3 sceneExtents = (worldBounds.max - worldBounds.min) / 2.0f;
-    float sceneRadius = std::sqrt(math::DotProduct(sceneExtents, sceneExtents));
-    if (sceneRadius < 1.0f) {
-      sceneRadius = 1.0f;
-    }
-
-    const Vector3 lightDir = m_LightDir.Normalize();
+  void SetupShadowMatrices() {
     Vector3 lightUp{0.0f, 1.0f, 0.0f};
-    if (std::abs(math::DotProduct(lightDir, lightUp)) > 0.99f) {
+    const Vector3 lightForward = (m_LightTarget - m_LightPosition).Normalize();
+    if (std::abs(math::DotProduct(lightForward, lightUp)) > 0.99f) {
       lightUp = {0.0f, 0.0f, 1.0f};
     }
 
-    const float lightDistance = sceneRadius + 2.0f;
-    const Vector3 lightEye = sceneCenter - lightDir * lightDistance;
-    math::SetupCameraMatrix(m_LightViewMatrix, lightEye, sceneCenter, lightUp);
-
-    Bounds3 lightBounds;
-    ExpandShadowLightBoundsForModel(m_PlaneModel, lightBounds);
-    ExpandShadowLightBoundsForModel(m_CubeModel, lightBounds);
-    if (!lightBounds.valid) {
-      return;
-    }
-
-    const float orthoPadding = 0.5f;
-    const float left = lightBounds.min.x - orthoPadding;
-    const float right = lightBounds.max.x + orthoPadding;
-    const float bottom = lightBounds.min.y - orthoPadding;
-    const float top = lightBounds.max.y + orthoPadding;
-    const float nearPlane = std::max(0.01f, lightBounds.min.z - orthoPadding);
-    const float farPlane =
-        std::max(nearPlane + 1.0f, lightBounds.max.z + orthoPadding);
-
+    math::SetupCameraMatrix(m_LightViewMatrix, m_LightPosition, m_LightTarget,
+                            lightUp);
     math::SetupOrthographicProjectionMatrix(
-        m_LightProjectionMatrix, left, right, bottom, top, nearPlane, farPlane);
+        m_LightProjectionMatrix, m_ShadowOrthoLeft, m_ShadowOrthoRight,
+        m_ShadowOrthoBottom, m_ShadowOrthoTop, m_ShadowNear, m_ShadowFar);
+
+    // Lighting uses a fixed direction from the scene toward the light.
+    m_LightDir = (m_LightPosition - m_LightTarget).Normalize();
   }
 
   void DrawTri(const Vector3& v0, const Vector3& v1, const Vector3& v2,
@@ -850,7 +767,16 @@ class Renderer {
   ShaderUniforms m_BlinnPhongShaderUniforms;
 
   // Light parameters
-  Vector3 m_LightDir{-0.45f, 0.80f, -0.40f};
+  // Fixed light setup for a simple plane + cube shadow scene.
+  Vector3 m_LightPosition{-4.0f, 6.0f, -3.0f};
+  Vector3 m_LightTarget{0.0f, 0.0f, 0.0f};
+  Vector3 m_LightDir{-0.51f, 0.77f, -0.38f};
+  float m_ShadowOrthoLeft{-8.0f};
+  float m_ShadowOrthoRight{8.0f};
+  float m_ShadowOrthoBottom{-6.0f};
+  float m_ShadowOrthoTop{6.0f};
+  float m_ShadowNear{0.1f};
+  float m_ShadowFar{20.0f};
   Matrix4x4 m_LightViewMatrix;
   Matrix4x4 m_LightProjectionMatrix;
   Matrix4x4 m_ShadowViewportMatrix;
