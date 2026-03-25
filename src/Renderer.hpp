@@ -745,8 +745,13 @@ class Renderer {
     // uniforms.texture = planeMesh->tga;
     uniforms.view = m_CameraMatrix;
     uniforms.projection = m_ProjectionMatrix;
+    uniforms.lightView = m_LightViewMatrix;
+    uniforms.lightProjection = m_LightProjectionMatrix;
+    uniforms.shadowViewport = m_ShadowViewportMatrix;
+    uniforms.shadowMap = &m_ShadowDepth;
     uniforms.lightDir = m_LightDir.Normalize();
     uniforms.cameraPosition = m_Camera.eye;
+    uniforms.shadowBias = m_ShadowBias;
 
     // Fixed material components
     uniforms.ambientStrength = 0.25f;
@@ -850,7 +855,7 @@ class Renderer {
   Matrix4x4 m_LightProjectionMatrix;
   Matrix4x4 m_ShadowViewportMatrix;
   render::DepthTarget m_ShadowDepth;
-  int m_ShadowBias{10};  // bias to prevent shadow acne
+  float m_ShadowBias{0.003f};  // bias to prevent shadow acne
   bool m_ShowShadowDepthOnly{false};
   bool m_HasLoggedShadowTriThisFrame{false};
 };
