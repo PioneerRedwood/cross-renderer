@@ -4,8 +4,9 @@
             "name": "Win64",
             "includePath": [
                 "${workspaceFolder}/lib/SDL2/Windows/include",
+                "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.34.31933/include",
                 "${workspaceFolder}/src",
-                "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.34.31933/include"
+                "${workspaceFolder}/src/render"
             ],
             "defines": [
                 "CROSS_RENDERER_RESOURCE_DIR=\"${workspaceFolder}/resources\""
@@ -20,7 +21,8 @@
             "includePath": [
                 "${workspaceFolder}/lib/SDL2/macOS/include",
                 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include",
-                "${workspaceFolder}/src"
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/src/render"
             ],
             "defines": [
                 "CROSS_RENDERER_RESOURCE_DIR=\"${workspaceFolder}/resources\""

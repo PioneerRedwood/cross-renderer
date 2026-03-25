@@ -480,11 +480,11 @@ void SetupViewportMatrix(Matrix4x4& out, float x, float y, float w, float h, flo
   out.m44 = 1.0f;
 }
 
-void SetupLightMatrix(Matrix4x4& outView, Matrix4x4& outProj, const Vector3& lightDir, 
+void SetupLightViewMatrix(Matrix4x4& outView, Matrix4x4& outProj, const Vector3& lightDir, 
                      float shadowMapWidth, float shadowMapHeight, float near, float far) 
 {
   // 라이트 뷰 행렬 구성
-  Vector3 lightPos = lightDir * -100.0f; // 라이트 위치는 라이트 방향의 반대 방향으로 충분히 멀리 설정
+  Vector3 lightPos = lightDir * -5.0f; // 라이트 위치는 라이트 방향의 반대 방향으로 충분히 멀리 설정 (예: 50 유닛)
   Vector3 target = { 0.0f, 0.0f, 0.0f }; // 라이트가 바라보는 타겟 (월드 원점)
   Vector3 up = { 0.0f, 1.0f, 0.0f }; // 라이트 기준 위 방향
 

@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
+#include <algorithm>
 
 namespace render {
 
@@ -85,6 +87,26 @@ private:
   std::function<void(RenderPassBuilder&)> m_ExecuteLambda;
   std::vector<ResourceHandle> m_ReadResourceHandles;
   std::vector<ResourceHandle> m_WriteResourceHandles;
+};
+
+// Temporary struct for depth target descriptor
+
+struct DepthTarget {
+  int width;
+  int height;
+  std::vector<float> data;
+
+  explicit DepthTarget(int width, int height) : width(width), height(height) {
+    data.resize(width * height);
+  }
+  
+  ~DepthTarget() {
+    data.clear();
+  }
+
+  void Clear(float clearValue) {
+    std::fill(data.begin(), data.end(), clearValue);
+  }
 };
 
 }

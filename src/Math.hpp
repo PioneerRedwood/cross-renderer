@@ -180,7 +180,7 @@ void SetupViewportMatrix(Matrix4x4& out, float x, float y, float w, float h, flo
 /**
  * @brief 빛의 방향과 그림자 맵의 크기, near, far 값을 기반으로 라이트 뷰와 프로젝션 매트릭스 구성
  */
-void SetupLightMatrix(Matrix4x4& outView, Matrix4x4& outProj, const Vector3& lightDir, float shadowMapWidth, float shadowMapHeight, float near, float far);
+void SetupLightViewMatrix(Matrix4x4& outView, Matrix4x4& outProj, const Vector3& lightDir, float shadowMapWidth, float shadowMapHeight, float near, float far);
 
 uint32_t LerpColor(uint32_t from, uint32_t to, float t);
 

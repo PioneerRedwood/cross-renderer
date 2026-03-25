@@ -75,7 +75,7 @@ class Program {
   }
 
   void HandleKeyInput(SDL_Event event) {
-		renderer->HandleKeyInput(event.key.keysym.sym);
+		renderer->HandleKeyInput(event);
   }
 
   void HandlePollEvent() {

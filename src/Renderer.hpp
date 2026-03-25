@@ -6,20 +6,39 @@
 #include <cmath>
 #include <cstdint>
 
-#include "Model.hpp"
 #include "Mesh.hpp"
+#include "MeshLoader.hpp"
+#include "Model.hpp"
 #include "Shader.hpp"
 #include "TextureLoader.hpp"
-#include "MeshLoader.hpp"
 #include "WorldCamera.hpp"
+#include "render/RenderPass.hpp"
 
+/**
+ * Description:
+ * Renderer: Software (Metal or Vulkan will be added in the future)
+ * Framebuffer Format: Apple: BGRA8888, Windows: RGBA8888; Fallback to ARGB8888
+ * if unsupported Window Size: 800x600 Depth Target Size: 800x600 (Same as
+ * window size for simplicity) Resource Directory: ./resources (Absolute path
+ * will be defined in CMakeLists.txt) In Use Meshes: bunny.obj (Just for
+ * testing, will be replaced with more complex models in the future)
+ */
 class Renderer {
  public:
   Renderer(SDL_Window* window, int width, int height)
-      : m_Width(width), m_Height(height) {
+      : m_Width(width),
+        m_Height(height),
+        m_FramebufferFormatEnum(0),
+        m_FramebufferFormat(nullptr),
+        m_Renderer(nullptr),
+        m_MainTexture(nullptr),
+        m_BunnyModel(nullptr),
+        m_PlaneModel(nullptr),
+        m_CubeModel(nullptr),
+        m_RotateRadian(0.0f),
+        m_ZBuffer(m_Width, m_Height),
+        m_ShadowDepth(256, 256) {
     m_Framebuffer = new uint32_t[m_Width * m_Height];
-    m_Camera = new WorldCamera();
-    m_ZBuffer = new float[m_Width * m_Height];
 
     m_Renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (m_Renderer == nullptr) {
@@ -71,28 +90,32 @@ class Renderer {
       return;
     }
 
-    m_Camera->aspect = (float)m_Width / m_Height;
-    m_Camera->fov = 45.0f;
+    m_TextureLoader = new TextureLoader(*m_Renderer);
+    m_MeshLoader = new MeshLoader(*m_Renderer);
+
+    m_Camera.aspect = (float)m_Width / m_Height;
+    m_Camera.fov = 45.0f;
 
     SetupMatrices();
 
-    m_TextureLoader = new TextureLoader(*m_Renderer);
-    m_MeshLoader = new MeshLoader(*m_Renderer);
-    
     LoadModels();
   }
 
   ~Renderer() {
     delete[] m_Framebuffer;
-    delete[] m_ZBuffer;
-    delete m_Camera;
 
     delete m_BunnyModel->mesh;
     delete m_BunnyModel;
-    
+
+    delete m_PlaneModel->mesh;
+    delete m_PlaneModel;
+
+    delete m_CubeModel->mesh;
+    delete m_CubeModel;
+
     delete m_TextureLoader;
     delete m_MeshLoader;
-    
+
     if (m_FramebufferFormat != nullptr) {
       SDL_FreeFormat(m_FramebufferFormat);
       m_FramebufferFormat = nullptr;
@@ -103,10 +126,18 @@ class Renderer {
 
   void Render(double delta) {
     UpdateScene(delta);
+    UpdateShadowMatrices();
 
     ClearBuffers();
-    RenderShadowMapScene(m_BlinnPhongShader, m_BlinnPhongShaderUniforms);
-    RenderMainScene(m_BlinnPhongShader, m_BlinnPhongShaderUniforms);
+    m_HasLoggedShadowTriThisFrame = false;
+
+    RenderShadowMapScene();
+
+    if (m_ShowShadowDepthOnly) {
+      VisualizeDepthTarget(m_ShadowDepth);
+    } else {
+      RenderMainScene(m_BlinnPhongShader, m_BlinnPhongShaderUniforms);
+    }
 
     SDL_UpdateTexture(m_MainTexture, nullptr, m_Framebuffer,
                       m_Width * static_cast<int>(sizeof(uint32_t)));
@@ -116,46 +147,52 @@ class Renderer {
     SDL_Delay(32);
   }
 
-  void HandleKeyInput(SDL_Keycode key) {
-    switch (key) {
+  void HandleKeyInput(const SDL_Event& event) {
+    switch (event.key.keysym.sym) {
       case SDLK_UP: {
-        m_Camera->fov++;
+        m_Camera.fov++;
         m_ProjectionMatrix = Matrix4x4::identity;
-        math::SetupPerspectiveProjectionMatrix(m_ProjectionMatrix,
-                                               m_Camera->fov, m_Camera->aspect,
-                                               m_ZNear, m_ZFar);
+        math::SetupPerspectiveProjectionMatrix(
+            m_ProjectionMatrix, m_Camera.fov, m_Camera.aspect, m_ZNear, m_ZFar);
         break;
       }
       case SDLK_DOWN: {
-        m_Camera->fov--;
+        m_Camera.fov--;
         m_ProjectionMatrix = Matrix4x4::identity;
-        math::SetupPerspectiveProjectionMatrix(m_ProjectionMatrix,
-                                               m_Camera->fov, m_Camera->aspect,
-                                               m_ZNear, m_ZFar);
+        math::SetupPerspectiveProjectionMatrix(
+            m_ProjectionMatrix, m_Camera.fov, m_Camera.aspect, m_ZNear, m_ZFar);
         break;
       }
       case SDLK_RIGHT: {
-        m_Camera->eye.x += 0.1f;
+        m_Camera.eye.x += 0.1f;
         m_CameraMatrix = Matrix4x4::identity;
-        math::SetupCameraMatrix(m_CameraMatrix, m_Camera->eye, m_Camera->at,
-                                m_Camera->up);
+        math::SetupCameraMatrix(m_CameraMatrix, m_Camera.eye, m_Camera.at,
+                                m_Camera.up);
         break;
       }
       case SDLK_LEFT: {
-        m_Camera->eye.x -= 0.1f;
+        m_Camera.eye.x -= 0.1f;
         m_CameraMatrix = Matrix4x4::identity;
-        math::SetupCameraMatrix(m_CameraMatrix, m_Camera->eye, m_Camera->at,
-                                m_Camera->up);
+        math::SetupCameraMatrix(m_CameraMatrix, m_Camera.eye, m_Camera.at,
+                                m_Camera.up);
         break;
       }
       case SDLK_r: {
         // Reset camera
-        m_Camera->eye = {2.2f, 1.2f, -6.5f};
-        m_Camera->at = {0.0f, 0.0f, 0.0f};
-        m_Camera->up = {0.0f, 1.0f, 0.0f};
-        m_Camera->fov = 45.0f;
+        m_Camera.eye = {2.2f, 1.2f, -6.5f};
+        m_Camera.at = {0.0f, 0.0f, 0.0f};
+        m_Camera.up = {0.0f, 1.0f, 0.0f};
+        m_Camera.fov = 45.0f;
         SetupMatrices();
         break;
+      }
+      case SDLK_d: {
+        const bool cmdPressed = (event.key.keysym.mod & KMOD_GUI) != 0;
+        const bool shiftPressed = (event.key.keysym.mod & KMOD_SHIFT) != 0;
+        if (cmdPressed && shiftPressed) {
+          LogF("[DEBUG] Turn on debug mode rendering shadow depth only ");
+          m_ShowShadowDepthOnly = !m_ShowShadowDepthOnly;
+        }
       }
       default: {
         break;
@@ -166,7 +203,7 @@ class Renderer {
  private:
   void UpdateScene(double delta) {
     m_BlinnPhongShaderUniforms.model = Matrix4x4::identity;
-    
+
     m_RotateRadian += 0.45f;
     if (m_RotateRadian > 360.0f) {
       m_RotateRadian -= 360.0f;
@@ -176,7 +213,8 @@ class Renderer {
 
   void ClearBuffers() {
     std::fill(m_Framebuffer, m_Framebuffer + m_Width * m_Height, 0);
-    std::fill(m_ZBuffer, m_ZBuffer + m_Width * m_Height, 1.0f);
+    m_ZBuffer.Clear(1.0f);
+    m_ShadowDepth.Clear(1.0f);
   }
 
   uint32_t PackColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) const {
@@ -188,31 +226,8 @@ class Renderer {
     return SDL_MapRGBA(m_FramebufferFormat, r, g, b, a);
   }
 
-  void DrawPoint(int x, int y, float z, uint32_t color) {
-    if (x >= m_Width || x < 0) return;
-    if (y >= m_Height || y < 0) return;
-
-    if (m_ZBuffer[x + y * m_Width] < z) {
-      return;
-    }
-
-    m_Framebuffer[x + y * m_Width] = color;
-    m_ZBuffer[x + y * m_Width] = z;
-  }
-
-  void TransformToScreen(Vector4& point) {
-    point = m_ProjectionMatrix * (m_CameraMatrix * point);
-    point.PerspectiveDivide();
-    point = m_ViewportMatrix * point;
-  }
-
-  bool ProjectWorldPointToScreen(const Vector3& point, Vector3& out) {
-    Vector4 clip = m_ProjectionMatrix *
-                   (m_CameraMatrix * Vector4(point.x, point.y, point.z, 1.0f));
-    return ProjectClipPointToScreen(clip, out);
-  }
-
   bool ProjectClipPointToScreen(const Vector4& clipPosition,
+                                const Matrix4x4& viewportMat,
                                 Vector3& out) const {
     Vector4 clip = clipPosition;
     if (clip.w <= 1e-6f) {
@@ -224,24 +239,129 @@ class Renderer {
         !std::isfinite(clip.z)) {
       return false;
     }
+
+    //    LogF("[ShadowDebug] clip=(%.4f, %.4f, %.4f, %.4f)", clip.x, clip.y,
+    //    clip.z, clip.w);
+
     if (clip.z < 0.0f || clip.z > 1.0f) {
       return false;
     }
 
-    clip = m_ViewportMatrix * clip;
+    clip = viewportMat * clip;
     out = {clip.x, clip.y, clip.z};
     return true;
   }
 
   void SetupMatrices() {
-    math::SetupCameraMatrix(m_CameraMatrix, m_Camera->eye, m_Camera->at,
-                            m_Camera->up);
-    math::SetupPerspectiveProjectionMatrix(m_ProjectionMatrix, m_Camera->fov,
-                                           m_Camera->aspect, m_ZNear, m_ZFar);
+    math::SetupCameraMatrix(m_CameraMatrix, m_Camera.eye, m_Camera.at,
+                            m_Camera.up);
+    math::SetupPerspectiveProjectionMatrix(m_ProjectionMatrix, m_Camera.fov,
+                                           m_Camera.aspect, m_ZNear, m_ZFar);
     math::SetupViewportMatrix(m_ViewportMatrix, 0, 0, m_Width, m_Height,
                               m_ZNear, m_ZFar);
-    math::SetupLightMatrix(m_LightViewMatrix, m_LightProjectionMatrix, m_LightDir,
-                            m_ShadowMapWidth, m_ShadowMapHeight, m_ZNear, m_ZFar);
+
+    math::SetupLightViewMatrix(m_LightViewMatrix, m_LightProjectionMatrix,
+                               m_LightDir, m_ShadowDepth.width,
+                               m_ShadowDepth.height, m_ZNear, m_ZFar);
+    math::SetupViewportMatrix(m_ShadowViewportMatrix, 0, 0, m_ShadowDepth.width,
+                              m_ShadowDepth.height, m_ZNear, m_ZFar);
+  }
+
+  struct Bounds3 {
+    Vector3 min;
+    Vector3 max;
+    bool valid{false};
+  };
+
+  void ExpandBounds(Bounds3& bounds, const Vector3& point) const {
+    if (!bounds.valid) {
+      bounds.min = point;
+      bounds.max = point;
+      bounds.valid = true;
+      return;
+    }
+
+    bounds.min.x = std::min(bounds.min.x, point.x);
+    bounds.min.y = std::min(bounds.min.y, point.y);
+    bounds.min.z = std::min(bounds.min.z, point.z);
+    bounds.max.x = std::max(bounds.max.x, point.x);
+    bounds.max.y = std::max(bounds.max.y, point.y);
+    bounds.max.z = std::max(bounds.max.z, point.z);
+  }
+
+  void ExpandShadowBoundsForModel(const Model* model, Bounds3& bounds) const {
+    if (model == nullptr || model->mesh == nullptr) {
+      return;
+    }
+
+    for (const Vector3& vertex : model->mesh->verts) {
+      const Vector4 world =
+          model->modelMatrix * Vector4(vertex.x, vertex.y, vertex.z, 1.0f);
+      ExpandBounds(bounds, {world.x, world.y, world.z});
+    }
+  }
+
+  void ExpandShadowLightBoundsForModel(const Model* model,
+                                       Bounds3& bounds) const {
+    if (model == nullptr || model->mesh == nullptr) {
+      return;
+    }
+
+    for (const Vector3& vertex : model->mesh->verts) {
+      const Vector4 world =
+          model->modelMatrix * Vector4(vertex.x, vertex.y, vertex.z, 1.0f);
+      const Vector4 light = m_LightViewMatrix * world;
+      ExpandBounds(bounds, {light.x, light.y, light.z});
+    }
+  }
+
+  void UpdateShadowMatrices() {
+    Bounds3 worldBounds;
+    ExpandShadowBoundsForModel(m_PlaneModel, worldBounds);
+    ExpandShadowBoundsForModel(m_CubeModel, worldBounds);
+
+    if (!worldBounds.valid) {
+      math::SetupLightViewMatrix(m_LightViewMatrix, m_LightProjectionMatrix,
+                                 m_LightDir, m_ShadowDepth.width,
+                                 m_ShadowDepth.height, m_ZNear, m_ZFar);
+      return;
+    }
+
+    const Vector3 sceneCenter = (worldBounds.min + worldBounds.max) / 2.0f;
+    const Vector3 sceneExtents = (worldBounds.max - worldBounds.min) / 2.0f;
+    float sceneRadius = std::sqrt(math::DotProduct(sceneExtents, sceneExtents));
+    if (sceneRadius < 1.0f) {
+      sceneRadius = 1.0f;
+    }
+
+    const Vector3 lightDir = m_LightDir.Normalize();
+    Vector3 lightUp{0.0f, 1.0f, 0.0f};
+    if (std::abs(math::DotProduct(lightDir, lightUp)) > 0.99f) {
+      lightUp = {0.0f, 0.0f, 1.0f};
+    }
+
+    const float lightDistance = sceneRadius + 2.0f;
+    const Vector3 lightEye = sceneCenter - lightDir * lightDistance;
+    math::SetupCameraMatrix(m_LightViewMatrix, lightEye, sceneCenter, lightUp);
+
+    Bounds3 lightBounds;
+    ExpandShadowLightBoundsForModel(m_PlaneModel, lightBounds);
+    ExpandShadowLightBoundsForModel(m_CubeModel, lightBounds);
+    if (!lightBounds.valid) {
+      return;
+    }
+
+    const float orthoPadding = 0.5f;
+    const float left = lightBounds.min.x - orthoPadding;
+    const float right = lightBounds.max.x + orthoPadding;
+    const float bottom = lightBounds.min.y - orthoPadding;
+    const float top = lightBounds.max.y + orthoPadding;
+    const float nearPlane = std::max(0.01f, lightBounds.min.z - orthoPadding);
+    const float farPlane =
+        std::max(nearPlane + 1.0f, lightBounds.max.z + orthoPadding);
+
+    math::SetupOrthographicProjectionMatrix(
+        m_LightProjectionMatrix, left, right, bottom, top, nearPlane, farPlane);
   }
 
   void DrawTri(const Vector3& v0, const Vector3& v1, const Vector3& v2,
@@ -296,8 +416,8 @@ class Renderer {
           if (z < 0.0f || z > 1.0f) continue;
 
           const int idx = x + y * m_Width;
-          if (z < m_ZBuffer[idx]) {
-            m_ZBuffer[idx] = z;
+          if (z < m_ZBuffer.data[idx]) {
+            m_ZBuffer.data[idx] = z;
             m_Framebuffer[idx] = color;
           }
         }
@@ -311,9 +431,12 @@ class Renderer {
     Vector3 screen0{};
     Vector3 screen1{};
     Vector3 screen2{};
-    if (!ProjectClipPointToScreen(out0.clipPosition, screen0) ||
-        !ProjectClipPointToScreen(out1.clipPosition, screen1) ||
-        !ProjectClipPointToScreen(out2.clipPosition, screen2)) {
+    if (!ProjectClipPointToScreen(out0.clipPosition, m_ViewportMatrix,
+                                  screen0) ||
+        !ProjectClipPointToScreen(out1.clipPosition, m_ViewportMatrix,
+                                  screen1) ||
+        !ProjectClipPointToScreen(out2.clipPosition, m_ViewportMatrix,
+                                  screen2)) {
       return;
     }
 
@@ -330,7 +453,7 @@ class Renderer {
     const Vector2 p0{screen0.x, screen0.y};
     const Vector2 p1{screen1.x, screen1.y};
     const Vector2 p2{screen2.x, screen2.y};
-    const float area = math::EdgeFunction(p0, p1, screen2.x, screen2.y);
+    const float area = math::EdgeFunction(p0, p1, p2.x, p2.y);
     if (std::abs(area) < 1e-6f) {
       return;
     }
@@ -368,7 +491,7 @@ class Renderer {
         }
 
         const int idx = x + y * m_Width;
-        if (z >= m_ZBuffer[idx]) {
+        if (z >= m_ZBuffer.data[idx]) {
           continue;
         }
 
@@ -393,34 +516,223 @@ class Renderer {
             (out0.uv * pw0 + out1.uv * pw1 + out2.uv * pw2) * invSum;
 
         const Color color = shader.PixelShader(pixelInput, uniforms);
-        m_ZBuffer[idx] = z;
+        m_ZBuffer.data[idx] = z;
         m_Framebuffer[idx] = PackColor(color.r, color.g, color.b, color.a);
       }
     }
   }
 
-  void LoadModels() {
-    // Load bunny, plane models
-    BuildBunnyMesh();
+  void RasterizeDepthTri(const Vector3& v0, const Vector3& v1,
+                         const Vector3& v2, const Matrix4x4& modelMat,
+                         render::DepthTarget& depthTarget) {
+    // 월드 좌표계로 변환
+    Vector4 v4_0 = modelMat * Vector4(v0.x, v0.y, v0.z, 1.0f);
+    Vector4 v4_1 = modelMat * Vector4(v1.x, v1.y, v1.z, 1.0f);
+    Vector4 v4_2 = modelMat * Vector4(v2.x, v2.y, v2.z, 1.0f);
 
-    m_PlaneModel = new Model();
-    m_PlaneModel->mesh = m_MeshLoader->LoadMesh("plane.obj");
-    m_PlaneModel->modelMatrix.Translate(0.0f, -2.0f, 0.0f);
+    // 클립 좌표계 변환 (카메라 + 투영)
+    Vector4 cv4_0 = m_LightProjectionMatrix * (m_LightViewMatrix * v4_0);
+    Vector4 cv4_1 = m_LightProjectionMatrix * (m_LightViewMatrix * v4_1);
+    Vector4 cv4_2 = m_LightProjectionMatrix * (m_LightViewMatrix * v4_2);
+
+    // 스크린 좌표계로 변환
+    Vector3 sv3_0;
+    Vector3 sv3_1;
+    Vector3 sv3_2;
+    if (!ProjectClipPointToScreen(cv4_0, m_ShadowViewportMatrix, sv3_0) ||
+        !ProjectClipPointToScreen(cv4_1, m_ShadowViewportMatrix, sv3_1) ||
+        !ProjectClipPointToScreen(cv4_2, m_ShadowViewportMatrix, sv3_2)) {
+      return;
+    }
+
+    if (m_ShowShadowDepthOnly && !m_HasLoggedShadowTriThisFrame) {
+      //      LogF("[ShadowDebug] tri screen v0=(%.2f, %.2f, %.4f) v1=(%.2f,
+      //      %.2f, %.4f) v2=(%.2f, %.2f, %.4f)",
+      //           sv3_0.x, sv3_0.y, sv3_0.z,
+      //           sv3_1.x, sv3_1.y, sv3_1.z,
+      //           sv3_2.x, sv3_2.y, sv3_2.z);
+      m_HasLoggedShadowTriThisFrame = true;
+    }
+
+    // 깊이 값 기록
+    const float minX = std::min({sv3_0.x, sv3_1.x, sv3_2.x});
+    const float maxX = std::max({sv3_0.x, sv3_1.x, sv3_2.x});
+    const float minY = std::min({sv3_0.y, sv3_1.y, sv3_2.y});
+    const float maxY = std::max({sv3_0.y, sv3_1.y, sv3_2.y});
+
+    const int x0 = std::max(0, static_cast<int>(std::floor(minX)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(minY)));
+    const int x1 =
+        std::min(depthTarget.width - 1, static_cast<int>(std::ceil(maxX)));
+    const int y1 =
+        std::min(depthTarget.height - 1, static_cast<int>(std::ceil(maxY)));
+
+    const Vector2 p0{sv3_0.x, sv3_0.y};
+    const Vector2 p1{sv3_1.x, sv3_1.y};
+    const Vector2 p2{sv3_2.x, sv3_2.y};
+    const float area = math::EdgeFunction(p0, p1, p2.x, p2.y);
+    if (std::abs(area) < 1e-6f) {
+      return;
+    }
+
+    if (area < 0.0f) {
+      return;
+    }
+
+    const float invArea = 1.0f / area;
+
+    for (int y = y0; y <= y1; ++y) {
+      for (int x = x0; x <= x1; ++x) {
+        const float px = static_cast<float>(x) + 0.5f;
+        const float py = static_cast<float>(y) + 0.5f;
+
+        const float w0 = math::EdgeFunction(p1, p2, px, py);
+        const float w1 = math::EdgeFunction(p2, p0, px, py);
+        const float w2 = math::EdgeFunction(p0, p1, px, py);
+
+        const bool insideCCW = (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f);
+        if (!insideCCW) {
+          continue;
+        }
+
+        const float b0 = w0 * invArea;
+        const float b1 = w1 * invArea;
+        const float b2 = w2 * invArea;
+        const float z = b0 * sv3_0.z + b1 * sv3_1.z + b2 * sv3_2.z;
+        if (z < 0.0f || z > 1.0f) {
+          continue;
+        }
+
+        const int idx = x + y * depthTarget.width;
+        if (z < depthTarget.data[idx]) {
+          depthTarget.data[idx] = z;
+        }
+      }
+    }
   }
 
-  void BuildBunnyMesh() {
+  void VisualizeDepthTarget(const render::DepthTarget& depthTarget) {
+    float minDepth = 1.0f;
+    float maxDepth = 0.0f;
+    bool hasWrittenDepth = false;
+
+    for (float depthValue : depthTarget.data) {
+      if (depthValue >= 1.0f) {
+        continue;
+      }
+      minDepth = std::min(minDepth, depthValue);
+      maxDepth = std::max(maxDepth, depthValue);
+      hasWrittenDepth = true;
+    }
+
+    for (int y = 0; y < m_Height; ++y) {
+      const int sy =
+          std::min(depthTarget.height - 1, y * depthTarget.height / m_Height);
+
+      for (int x = 0; x < m_Width; ++x) {
+        const int sx =
+            std::min(depthTarget.width - 1, x * depthTarget.width / m_Width);
+        const int depthIdx = sx + sy * depthTarget.width;
+        const int framebufferIdx = x + y * m_Width;
+
+        const float depthValue = depthTarget.data[depthIdx];
+        uint8_t intensity = 0;
+        if (hasWrittenDepth && depthValue < 1.0f) {
+          float normalizedDepth = 0.0f;
+          if (maxDepth > minDepth + 1e-6f) {
+            normalizedDepth = (depthValue - minDepth) / (maxDepth - minDepth);
+          }
+          intensity = static_cast<uint8_t>((1.0f - normalizedDepth) * 255.0f);
+        }
+
+        m_Framebuffer[framebufferIdx] =
+            PackColor(intensity, intensity, intensity, 255);
+      }
+    }
+  }
+
+  void LogDepthTargetStats(const render::DepthTarget& depthTarget) const {
+    if (depthTarget.data.empty()) {
+      LogF("[ShadowDebug] depth target is empty");
+      return;
+    }
+
+    float minDepth = 1.0f;
+    float maxDepth = 0.0f;
+    int writtenPixels = 0;
+
+    for (float depthValue : depthTarget.data) {
+      if (depthValue < 1.0f) {
+        minDepth = std::min(minDepth, depthValue);
+        maxDepth = std::max(maxDepth, depthValue);
+        ++writtenPixels;
+      }
+    }
+
+    if (writtenPixels == 0) {
+      LogF("[ShadowDebug] written=0 size=%dx%d", depthTarget.width,
+           depthTarget.height);
+      return;
+    }
+
+    LogF("[ShadowDebug] written=%d size=%dx%d min=%.6f max=%.6f", writtenPixels,
+         depthTarget.width, depthTarget.height, minDepth, maxDepth);
+  }
+
+  void RenderDepthMesh(const Model& model, render::DepthTarget& depthTarget) {
+    for (size_t idx = 0; idx + 2 < model.mesh->indices.size(); idx += 3) {
+      uint32_t i0 = model.mesh->indices[idx];
+      uint32_t i1 = model.mesh->indices[idx + 1];
+      uint32_t i2 = model.mesh->indices[idx + 2];
+      RasterizeDepthTri(model.mesh->verts[i0], model.mesh->verts[i1],
+                        model.mesh->verts[i2], model.modelMatrix, depthTarget);
+    }
+  }
+
+  void LoadModels() {
+    if (m_TextureLoader == nullptr || m_MeshLoader == nullptr) {
+      return;
+    }
+
+    // Load bunny, plane models
     m_BunnyModel = new Model();
     m_BunnyModel->mesh = m_MeshLoader->LoadMesh("bunny.obj");
     Mesh* mesh = m_BunnyModel->mesh;
-    if (mesh != nullptr) {
-      m_BunnyNormalizedVerts = mesh->verts;
 
-      mesh->tga = m_TextureLoader->LoadTGATextureWithName("numbered_checker.tga");
+    m_PlaneModel = new Model();
+    m_PlaneModel->mesh = CreateGridPlaneMesh(10.0f, 10.0f, 10, 10);
+    const float bunnyBottomY =
+        -1.968211f;               // bunny 모델의 바닥 Y 좌표 (최소 Y 값)
+    const float epsilon = 0.01f;  // 살짝 아래로 내려 z-fighting 방지
+
+    m_PlaneModel->modelMatrix = Matrix4x4::identity;
+    m_PlaneModel->modelMatrix.Translate(0.0f, bunnyBottomY - epsilon, 0.0f);
+    m_PlaneModel->mesh->tga =
+        m_TextureLoader->LoadTGATextureWithName("numbered_checker.tga");
+
+    m_CubeModel = new Model();
+    m_CubeModel->mesh = m_MeshLoader->LoadMesh("cube.obj");
+    m_CubeModel->modelMatrix = Matrix4x4::identity;
+    m_CubeModel->modelMatrix.Translate(0.0f, 1.0f, 0.0f);
+  }
+
+  void RenderMeshWithShader(const Shader& shader,
+                            const ShaderUniforms& uniforms, const Mesh& mesh) {
+    for (size_t idx = 0; idx + 2 < mesh.indices.size(); idx += 3) {
+      uint32_t i0 = mesh.indices[idx];
+      uint32_t i1 = mesh.indices[idx + 1];
+      uint32_t i2 = mesh.indices[idx + 2];
+      const VertexInput v0{mesh.verts[i0], mesh.normals[i0], mesh.uvs[i0]};
+      const VertexInput v1{mesh.verts[i1], mesh.normals[i1], mesh.uvs[i1]};
+      const VertexInput v2{mesh.verts[i2], mesh.normals[i2], mesh.uvs[i2]};
+      const VertexOutput out0 = shader.VertexShader(v0, uniforms);
+      const VertexOutput out1 = shader.VertexShader(v1, uniforms);
+      const VertexOutput out2 = shader.VertexShader(v2, uniforms);
+      DrawShaderTri(out2, out1, out0, uniforms, shader, true);
     }
   }
 
   void RenderMainScene(const Shader& shader, ShaderUniforms& uniforms) {
-    // Plane 모델 렌더링 추가 바람
     if (m_PlaneModel == nullptr) {
       return;
     }
@@ -430,59 +742,48 @@ class Renderer {
     }
 
     uniforms.model = m_PlaneModel->modelMatrix;
-		uniforms.texture = planeMesh->tga;
+    // uniforms.texture = planeMesh->tga;
     uniforms.view = m_CameraMatrix;
     uniforms.projection = m_ProjectionMatrix;
     uniforms.lightDir = m_LightDir.Normalize();
-    uniforms.cameraPosition = m_Camera->eye;
+    uniforms.cameraPosition = m_Camera.eye;
 
     // Fixed material components
     uniforms.ambientStrength = 0.25f;
     uniforms.diffuseStrength = 0.8f;
     uniforms.specularStrength = 1.4f;
     uniforms.shininess = 8.0f;
-    uniforms.specularColor = Color(0xFFFFFFAA);  // white color
+    uniforms.specularColor = Color(0xAAAAAAAA);
 
-    for (size_t idx = 0; idx + 2 < planeMesh->indices.size(); idx += 3) {
-      uint32_t i0 = planeMesh->indices[idx];
-      uint32_t i1 = planeMesh->indices[idx + 1];
-      uint32_t i2 = planeMesh->indices[idx + 2];
-      const VertexInput v0{planeMesh->verts[i0], planeMesh->normals[i0],
-                           planeMesh->uvs[i0]};
-      const VertexInput v1{planeMesh->verts[i1], planeMesh->normals[i1],
-                           planeMesh->uvs[i1]};
-      const VertexInput v2{planeMesh->verts[i2], planeMesh->normals[i2],
-                           planeMesh->uvs[i2]};
-      const VertexOutput out0 = shader.VertexShader(v0, uniforms);
-      const VertexOutput out1 = shader.VertexShader(v1, uniforms);
-      const VertexOutput out2 = shader.VertexShader(v2, uniforms);
-      DrawShaderTri(out2, out1, out0, uniforms, shader, true);
-		}
-
+    RenderMeshWithShader(shader, uniforms, *m_PlaneModel->mesh);
+#if 0
     // Bunny 모델 렌더링
-    if (m_BunnyModel == nullptr) {
+    if (m_BunnyModel == nullptr)
+    {
       return;
     }
-    Mesh* bunnyMesh = m_BunnyModel->mesh;
-    if (bunnyMesh == nullptr) {
+    Mesh *bunnyMesh = m_BunnyModel->mesh;
+    if (bunnyMesh == nullptr)
+    {
       return;
     }
-		uniforms.model = m_BunnyModel->modelMatrix;
-		uniforms.texture = bunnyMesh->tga;
+    uniforms.model = m_BunnyModel->modelMatrix;
+    uniforms.texture = bunnyMesh->tga;
 
     //      uniforms.specularColor = Color(0xFF0000FF); // red color
-    uniforms.specularColor = Color(0xFFFFFFFF);  // white color
+    uniforms.specularColor = Color(0xFFFFFFFF); // white color
 
-    for (size_t idx = 0; idx + 2 < bunnyMesh->indices.size(); idx += 3) {
+    for (size_t idx = 0; idx + 2 < bunnyMesh->indices.size(); idx += 3)
+    {
       uint32_t i0 = bunnyMesh->indices[idx];
       uint32_t i1 = bunnyMesh->indices[idx + 1];
       uint32_t i2 = bunnyMesh->indices[idx + 2];
 
-      const VertexInput v0{m_BunnyNormalizedVerts[i0], bunnyMesh->normals[i0],
+      const VertexInput v0{bunnyMesh->verts[i0], bunnyMesh->normals[i0],
                            bunnyMesh->uvs[i0]};
-      const VertexInput v1{m_BunnyNormalizedVerts[i1], bunnyMesh->normals[i1],
+      const VertexInput v1{bunnyMesh->verts[i1], bunnyMesh->normals[i1],
                            bunnyMesh->uvs[i1]};
-      const VertexInput v2{m_BunnyNormalizedVerts[i2], bunnyMesh->normals[i2],
+      const VertexInput v2{bunnyMesh->verts[i2], bunnyMesh->normals[i2],
                            bunnyMesh->uvs[i2]};
 
       const VertexOutput out0 = shader.VertexShader(v0, uniforms);
@@ -491,30 +792,34 @@ class Renderer {
 
       DrawShaderTri(out2, out1, out0, uniforms, shader, true);
     }
+#else
+    if (m_CubeModel == nullptr || m_CubeModel->mesh == nullptr) {
+      return;
+    }
+
+    uniforms.model = m_CubeModel->modelMatrix;
+    uniforms.texture = planeMesh->tga;
+    uniforms.specularColor = Color(0xFFFFFFFF);
+    RenderMeshWithShader(shader, uniforms, *m_CubeModel->mesh);
+#endif
   }
 
-  void RenderShadowMapScene(const Shader& shader, ShaderUniforms& uniforms) {
-    // 라이트 시점으로 장면을 렌더링, m_ShadowMapFramebuffer에 깊이 값 기록
-    // m_LightViewMatrix, m_LightProjectionMatrix는 SetupLightMatrix에서 이미 구성되어 있음
-    // 간단한 깊이만 기록하는 쉐이더 사용 (예: DepthOnly Shader)
-    
-    // 그려야 할 메시 대상으로 쉐도우맵 렌더링
-    // 일단 그릴 대상은 Plane, Bunny 모델 한정
+  void RenderShadowMapScene() {
+    // 일반적으로 쉐도우 캐스트를 써서 일부 모델만 그림자 맵을 렌더링
+    RenderDepthMesh(*m_PlaneModel, m_ShadowDepth);
+    // RenderDepthMesh(*m_BunnyModel, m_ShadowDepth);
+    RenderDepthMesh(*m_CubeModel, m_ShadowDepth);
 
-    // Vector4 lightClip = lightProjection * lightView * model * vertexPosition
-    // Vector4 lightNdc = lightClip / lightClip.w // NDC 변환
-    // Shdow map 해상도에 맞게 픽셀 좌표 변환
-    // 가장 가까운 깊이 값 저장
-
-    // 만약 현재 깊이 값과 저장된 깊이 값에 차이가 일정 임계값 이상이면 그림자 처리 (예: 현재 깊이 > 저장된 깊이 + bias)
-    // bias는 그림자 acne 방지 위해 사용, 너무 작으면 여전히 acne 발생, 너무 크면 그림자가 너무 멀리 떨어져 보임
+    if (m_ShowShadowDepthOnly) {
+      LogDepthTargetStats(m_ShadowDepth);
+    }
   }
 
  private:
   int m_Width{0};
   int m_Height{0};
   uint32_t* m_Framebuffer{nullptr};
-  WorldCamera* m_Camera{nullptr};
+  WorldCamera m_Camera;
 
   Matrix4x4 m_ViewportMatrix, m_ProjectionMatrix, m_CameraMatrix;
 
@@ -522,31 +827,30 @@ class Renderer {
   SDL_Texture* m_MainTexture{nullptr};
   uint32_t m_FramebufferFormatEnum{SDL_PIXELFORMAT_ARGB8888};
   SDL_PixelFormat* m_FramebufferFormat{nullptr};
+
   TextureLoader* m_TextureLoader{nullptr};
   MeshLoader* m_MeshLoader{nullptr};
-  float* m_ZBuffer{nullptr};
+  render::DepthTarget m_ZBuffer;
 
-  const float m_ZNear{0.1f}, m_ZFar{50.0f};
+  const float m_ZNear{1.0f}, m_ZFar{200.0f};
 
   float m_RotateRadian{0.0f};
 
   Model* m_BunnyModel{nullptr};
-  std::vector<Vector3> m_BunnyNormalizedVerts;
   Model* m_PlaneModel{nullptr};
+  Model* m_CubeModel{nullptr};
+
+  // Using BlinnPhongShader
+  BlinnPhongShader m_BlinnPhongShader;
+  ShaderUniforms m_BlinnPhongShaderUniforms;
 
   // Light parameters
   Vector3 m_LightDir{-0.45f, 0.80f, -0.40f};
   Matrix4x4 m_LightViewMatrix;
   Matrix4x4 m_LightProjectionMatrix;
-
-  // Shadow map parameters
-  uint32_t m_ShadowMapWidth {512};
-  uint32_t m_ShadowMapHeight {512};
-  // shadow map framebuffer and texture
-  float* m_ShadowMapFramebuffer {nullptr};
-  int m_ShadowBias {10}; // bias to prevent shadow acne
-
-  // Using BlinnPhongShader
-  BlinnPhongShader m_BlinnPhongShader;
-  ShaderUniforms m_BlinnPhongShaderUniforms;
+  Matrix4x4 m_ShadowViewportMatrix;
+  render::DepthTarget m_ShadowDepth;
+  int m_ShadowBias{10};  // bias to prevent shadow acne
+  bool m_ShowShadowDepthOnly{false};
+  bool m_HasLoggedShadowTriThisFrame{false};
 };
